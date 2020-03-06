@@ -1,2 +1,2 @@
-# Estad-stica
+# Estadistica
 Herramientas estadísticas en hidrología
