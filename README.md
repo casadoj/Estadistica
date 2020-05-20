@@ -1,4 +1,4 @@
-# Estadísstica
+# Estadística
 Herramientas estadísticas en hidrología. Hasta el momento se incluyen herramientas relacionadas con tres temas:
 
 *  __BC-Corrección de sesgo__. Funciones para aplicar la correción de sesgo mediante _quantile mapping_ o _scaled distribution mapping_.
