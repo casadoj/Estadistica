@@ -25,7 +25,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 get_ipython().run_line_magic('matplotlib', 'inline')
 import seaborn as sns
-sns.set()
 from statsmodels.distributions.empirical_distribution import ECDF
 from scipy import stats
 from scipy.stats import rv_discrete, rv_continuous
@@ -199,7 +198,7 @@ class POT:
         self.parsCon = pars
         return pars
         
-    def cdf(self, x: Union[List, np.ndarray]) -> np.ndarray:
+    def cdf(self, x: Union[List, np.ndarray]) -> pd.Series:
         """Calcula la función de distribución acumulada (CDF, cumulative density function) de una distribución POT (peaks-over-threshold) compuesta por una Poisson y una exponencial.
 
         Parámetros:
@@ -209,7 +208,7 @@ class POT:
 
         Salida:
         -------
-        cdf:       array (n,)
+        cdf:       pd.Series (n,)
             Probabilidad de no excedencia de cada uno de los valores de 'x'
         """
 
@@ -226,9 +225,9 @@ class POT:
         for k in range(0, kmax + 1): # para cada 'k': nº de eventos anuales
             cdf += self.distDis.pmf(k, self.mu) * self.distCon.cdf(y, *self.parsCon)**k
 
-        return cdf
+        return pd.Series(cdf, index=x)
     
-    def pdf(self, x: Union[List, np.ndarray]) -> np.ndarray:
+    def pdf(self, x: Union[List, np.ndarray]) -> pd.Series:
         """Calcula la función de densidad (PDF, probability distribution function) de una distribución POT (peaks-over-threshold) compuesta por una Poisson y una exponencial.
 
         Parámetros:
@@ -238,7 +237,7 @@ class POT:
 
         Salida:
         -------
-        pdf:       array (n,)
+        pdf:       pd.Series (n,)
             Probabilidad de cada uno de los valores de 'x'
         """
 
@@ -253,9 +252,9 @@ class POT:
         for k in range(0, kmax + 1): # para cada 'k': nº de eventos anuales
             pdf += self.distDis.pmf(k, self.mu) * k * self.distCon.cdf(y, *self.parsCon)**(k - 1) * self.distCon.pdf(y, *self.parsCon)
 
-        return pdf
+        return pd.Series(pdf, index=x)
     
-    def ppf(self, q: Union[List, np.ndarray]) -> np.ndarray:
+    def ppf(self, q: Union[List, np.ndarray]) -> pd.Series:
         """Calcula el cuantil asociado a una probabilidad de no excedencia de una distribución POT (peaks-over-threshold) compuesta por una Poisson y una exponencial.
 
         Parámetros:
@@ -265,7 +264,7 @@ class POT:
 
         Salida:
         -------
-        x:       array (n,)
+        x:       pd.series (n,)
             Cuantiles asociados a cada probabilidad de 'q'
         """
 
@@ -297,4 +296,4 @@ class POT:
             # convertir a la variable original
             x[i] = y + self.threshold
 
-        return x
+        return pd.Series(x, index=q)
