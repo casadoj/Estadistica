@@ -28,10 +28,12 @@ import seaborn as sns
 sns.set()
 from statsmodels.distributions.empirical_distribution import ECDF
 from scipy import stats
+from scipy.stats import rv_discrete, rv_continuous
 from fitter import Fitter
+from typing import Union, List
 
 
-# diccionario para llamar a las funciones de distribución a partir de 'string's
+# diccionario para llamar a las funciones de distribución a partir de strings
 DFdict = {'beta': stats.beta,
           'expon': stats.expon,
           # 'frechet_r': stats.frechet_r,
@@ -45,27 +47,32 @@ DFdict = {'beta': stats.beta,
 
 class POT:
     
-    def __init__(self, serie, distDis, distCon):
+    def __init__(self, series: pd.Series, distDis: rv_discrete, distCon: rv_continuous, threshold: float = None):
         """
         Parámetros:
         -----------
-        serie:     pd.Series. Serie temporal; el índice debe ser 'datetime' o 'datetime.date'
-        distDis:   callable. Función de distribución discreta con la que modelar la ocurrencia anual de eventos
-        distCon:   callable. Función de distribución continua con la que modelar la magnitud de los eventos
+        series:     pd.Series
+            Serie temporal; el índice debe ser 'datetime' o 'datetime.date'
+        distDis:   rv_discrete
+            Función de distribución discreta con la que modelar la ocurrencia anual de eventos
+        distCon:   rv_continuous
+            Función de distribución continua con la que modelar la magnitud de los eventos
+        threshold: float
+            Umbral a partir del cual se identifica un evento
         """
         
-        self.serie = serie
+        self.series = series
         self.distDis = distDis
         self.distCon = distCon
-    
-    def select_events(self, thr, plot=True):
+        self.threshold = threshold
+
+    def select_peaks(self, days: int = None, plot: bool = True) -> pd.Series:
         """Selección de eventos para el futuro ajuste de una distribución POT (peaks-over-threshold).
 
         En primer lugar se seleccionan todos los pasos temporales con valor por encima del umbral. Seguidamente se selecciona úncicamente el máximo de la cada subserie de excesos sobre el umbral, p.ej., el máximo de cada hidrograma de avenida.
 
         Parámetros:
         -----------
-        thr:       float. Umbral a partir del cual se identifica un evento
         plot:      boolean. Si se quiere mostrar un gráfico de línea con la serie temporal y los eventos seleccionados
 
         Salida:
@@ -73,46 +80,56 @@ class POT:
         eventos:   pd.Series. Serie de eventos seleccionados; el índice sigue siendo 'datetime' o 'datetime.date'
         """
 
-        # serie preliminar de eventos
-        events0 = self.serie[self.serie > thr]
+        # boolean series of exceedances over thresholds
+        temp = self.series.copy() * 0
+        temp[self.series >= self.threshold] = 1
+        # the difference of the boolean timeseries indicates starts (1) and ends (-1)
+        diff = temp.diff()
+        if temp.iloc[0] == 1: # add a start if the time series exceeds the threshold in the 1st timestep
+            diff.iloc[0] = 1
+        if (temp.iloc[-1] == 1) & (diff.iloc[-1] == 0): # add an end if the time series exceeds the threshold in the last timestep
+            diff.iloc[-1] = -1
+        # identify start and end of the periods exceeding the threshold
+        starts = temp[diff == 1].index
+        ends = temp[diff == -1].index
 
-        # diferencia en días entre los eventos consecutivos de 'events0'
-        At = events0.index[1:] - events0.index[:-1]
-        At = pd.Series([t.days for t in At], index=events0.iloc[:-1].index)
+        # find maxima in those periods
+        peaks = pd.Series({self.series[start:end].idxmax(): self.series[start:end].max() for start, end in zip(starts, ends)})
 
-        # serie de eventos independientes
-        events = pd.Series(dtype=float)
-        To, Tf = [], []
-        i = 0
-        while i < len(events0) - 2:
-            to = events0.index[i]
-            for j in range(i, len(events0) - 1):
-                tf = events0.index[j]
-                if At[tf] > 1:
-                    break
-            events.loc[events0.loc[to:tf].idxmax()] = events0.loc[to:tf].max()
-            i = events0.index.get_loc(tf) + 1
+        # remove peaks that are closer than the specified 'days'
+        if days is not None:
+            mask = peaks.index.to_series().diff().dt.total_seconds() < days * 3600 * 24
+            peaks = peaks[~mask]
 
         if plot:
             plt.figure(figsize=(12, 4))
-            plt.plot(self.serie, 'steelblue', lw=.5, label='serie')
-            plt.hlines(thr, self.serie.index[0], self.serie.index[-1], ls=':', lw=.75,
-                       label='umbral')
-            plt.scatter(events.index, events, marker='+', s=30, lw=1, c='indianred',
+            plt.plot(self.series, 'steelblue', lw=.5, label='serie')
+            plt.axhline(self.threshold, c='k', ls=':', lw=.75, label='threshold')
+            plt.scatter(peaks.index, peaks, marker='+', s=30, lw=1, c='indianred',
                         label='eventos')
-            plt.xlim(self.serie.index[0], self.serie.index[-1])
-            plt.legend(loc=8, ncol=3, bbox_to_anchor=(0.1, -0.22, 0.8, 0.1));
-        
-        self.eventos = events
-        return events
+            plt.xlim(self.series.index[0], self.series.index[-1])
+            plt.legend(loc=8, ncol=3, bbox_to_anchor=(0.1, -0.22, 0.8, 0.1), frameon=False);
+
+        self.peaks = peaks
+        return peaks
     
-    def fit_discrete(self, plot=True):
+    def fit_discrete(self, plot: bool = True) -> float:
         """Ajusta la distribución discreta que modela la ocurrencia anual de eventos extremos
+        
+        Input:
+        ------
+        plot: bool
+            Whether to plot or not the fitted distribution
+            
+        Output:
+        -------
+        mu:    float
+            Mean of the discrete distribution
         """
         
         # recurrencia (parámetro de la distribución Poisson)
         T = 365 # pasos temporales en la serie correspondiente al intervalo de estudio (1 año)
-        mu = T * len(self.eventos) / len(self.serie)
+        mu = T * len(self.peaks) / len(self.series)
         print('mu = {0:.3f}'.format(mu))
         
         # momentos de la distribución de Poisson
@@ -133,30 +150,31 @@ class POT:
             kmax = int(self.distDis.ppf(1 - epsilon, mu))
             k = np.arange(kmin, kmax)
 
-            fig, ax = plt.subplots(ncols=2, figsize=(10, 5))
-            ax[0].scatter(k, self.distDis.pmf(k, mu), s=5, label='pmf')
-            ax[0].set_ylabel('pmf')
-            ax[1].scatter(k, self.distDis.cdf(k, mu), s=5, label='cdf')
-            ax[1].set_ylabel('cdf');
+            fig, ax = plt.subplots(nrows=2, figsize=(4, 8.5), sharex=True)
+            ax[0].scatter(k, self.distDis.pmf(k, mu), s=5, label='PMF')
+            ax[0].set_ylabel('PMF')
+            ax[1].scatter(k, self.distDis.cdf(k, mu), s=5, label='CDF')
+            ax[1].set(xlabel='no. peaks', ylabel='CDF');
 
         self.mu = mu
         return mu
         
-    def fit_continuous(self, thr, plot=True):
+    def fit_continuous(self, plot: bool = True) -> List[float]:
         """Ajusta la distribución continua que modela la magnitud de un evento extremo
         
         Parámetros:
         -----------
-        thr:       float. Umbral a partir del cual se identifica un evento
-        plot:      boolean. Si se quiere mostrar gráficos del ajuste
+        plot:      bool
+            Si se quiere mostrar gráficos del ajuste
         
         Salidas:
         --------
-        self.parsCon: list. Parámetros ajustados de la distribución continua: localización y escala, si es una exponencial
+        pars: List
+            Parámetros ajustados de la distribución continua: localización y escala, si es una exponencial
         """
         
         # serie de excedencias en los eventos
-        y = self.eventos - thr
+        y = self.peaks - self.threshold
 
         # ajustar distribución empírica
         ecdfPOT = ECDF(y)
@@ -168,35 +186,37 @@ class POT:
         cdfs = self.distCon.cdf(ys, *pars)
         
         if plot:
-            fig, ax = plt.subplots(ncols=2, figsize=(10, 4.5), sharex=True)
+            fig, ax = plt.subplots(nrows=2, figsize=(4, 8.5), sharex=True)
             # histograma
             sns.histplot(y, kde=False, stat='count', ax=ax[0])
-            ax[0].set(xlabel='$N-thr$ (m)', ylabel='nº eventos')
+            ax[0].set(xlabel=r'$serie - thr$ (m)', ylabel='nº eventos')
             # cdf empírica vs ajuste
             ax[1].plot(ys, cdfs, label='ajuste')
             ax[1].scatter(y, ecdfs, s=1, c='k', label='empírica')
-            ax[1].set(xlim=(0, np.ceil(y.max())), ylim=(0), ylabel='CDF', xlabel='$serie-thr$')
-            ax[1].legend(loc=4);
+            ax[1].set(xlim=(0, np.ceil(y.max())), ylim=(0), ylabel='CDF', xlabel=r'$serie - thr$')
+            ax[1].legend(loc=4, frameon=False);
             
         self.parsCon = pars
         return pars
         
-    def cdf(self, x, thr):
+    def cdf(self, x: Union[List, np.ndarray]) -> np.ndarray:
         """Calcula la función de distribución acumulada (CDF, cumulative density function) de una distribución POT (peaks-over-threshold) compuesta por una Poisson y una exponencial.
 
         Parámetros:
         -----------
-        thr:       float. Umbral que define los eventos considerados como extremos en la POT
+        x:         array or list (n,)
+            Valor/es de la variable para los que calcular su probabilidad de no excedencia acumulada
 
         Salida:
         -------
-        cdf:       array (n,). Probabilidad de no excedencia de cada uno de los valores de 'x'
+        cdf:       array (n,)
+            Probabilidad de no excedencia de cada uno de los valores de 'x'
         """
 
         # asegurar que 'x' es un array
         x = np.array(x)
         # restar el umbral para convertir la variable en el exceso
-        y = x - thr
+        y = x - self.threshold
         
         # 'array' donde guardar la probabilidad acumulada
         cdf = np.zeros_like(y)
@@ -208,22 +228,23 @@ class POT:
 
         return cdf
     
-    def pdf(self, x, thr):
+    def pdf(self, x: Union[List, np.ndarray]) -> np.ndarray:
         """Calcula la función de densidad (PDF, probability distribution function) de una distribución POT (peaks-over-threshold) compuesta por una Poisson y una exponencial.
 
         Parámetros:
         -----------
-        x:         array or list (n,). Valor/es de la variable para los que calcular su probabilidad de no excedencia
-        thr:       float. Umbral que define los eventos considerados como extremos en la POT
+        x:         array or list (n,)
+            Valor/es de la variable para los que calcular su probabilidad de no excedencia
 
         Salida:
         -------
-        pdf:       array (n,). Probabilidad de cada uno de los valores de 'x'
+        pdf:       array (n,)
+            Probabilidad de cada uno de los valores de 'x'
         """
 
         # asegurar que 'x' es un array
         x = np.array(x)
-        y = x - thr
+        y = x - self.threshold
         # 'array' donde guardar la probabilidad acumulada
         pdf = np.zeros_like(y)
 
@@ -234,17 +255,18 @@ class POT:
 
         return pdf
     
-    def ppf(self, q, thr):
+    def ppf(self, q: Union[List, np.ndarray]) -> np.ndarray:
         """Calcula el cuantil asociado a una probabilidad de no excedencia de una distribución POT (peaks-over-threshold) compuesta por una Poisson y una exponencial.
 
         Parámetros:
         -----------
-        q:         array or list (n,). Valor/es de probabilidad de no excedencia
-        thr:       float. Umbral que define los eventos considerados como extremos en la POT
+        q:         array or list (n,)
+            Valor/es de probabilidad de no excedencia
 
         Salida:
         -------
-        x:       array (n,). Cuantil asociado a cada probabilidad de 'q'
+        x:       array (n,)
+            Cuantiles asociados a cada probabilidad de 'q'
         """
 
         # asegurar que 'q' es un array
@@ -273,13 +295,6 @@ class POT:
             # valor de exceso asociado a dicho cuantil
             y = self.distCon.ppf(qy, *self.parsCon)
             # convertir a la variable original
-            x[i] = y + thr
+            x[i] = y + self.threshold
 
         return x
-
-
-# In[ ]:
-
-
-
-
